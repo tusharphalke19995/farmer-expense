@@ -1,7 +1,7 @@
-import { useLiveQuery } from 'dexie-react-hooks';
 import { repository } from '../data/repository';
 import type { DateRange } from '../types';
+import { useRepositoryQuery } from './useRepositoryQuery';
 
 export function useSummary(range: DateRange) {
-  return useLiveQuery(() => repository.summarize(range), [range.from, range.to]);
+  return useRepositoryQuery(() => repository.summarize(range), [range.from, range.to]);
 }

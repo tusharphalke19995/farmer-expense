@@ -1,6 +1,6 @@
-import { useLiveQuery } from 'dexie-react-hooks';
 import { repository } from '../data/repository';
+import { useRepositoryQuery } from './useRepositoryQuery';
 
 export function useCrops() {
-  return useLiveQuery(() => repository.listCrops(), []);
+  return useRepositoryQuery(() => repository.listCrops(), []);
 }

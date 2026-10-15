@@ -49,6 +49,11 @@ export default function App() {
         </header>
         <main className="page-pad px-4 pt-4">
           {ledger.status === 'opening' ? <p className="text-[var(--muted)]">Opening your ledger…</p> : null}
+          {ledger.status === 'ready' && !ledger.persistent ? (
+            <p className="error" role="alert">
+              This browser is not keeping the ledger. Allow storage for this site, then reload.
+            </p>
+          ) : null}
           {ledger.status === 'error' ? (
             <div>
               <p>The ledger on this phone could not be read.</p>

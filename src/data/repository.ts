@@ -13,9 +13,25 @@ import type {
 } from '../types';
 import { buildSummary } from './aggregates';
 import { expensesToCsv, isIsoDate, parseBackup, type BackupFile } from './backup';
-import { db, type ExpenseRecord, type IncomeRecord } from './db';
+import { db as indexedDb, type ExpenseRecord, type IncomeRecord } from './db';
+import { createLocalLedger, type LedgerDb } from './localLedger';
 import { fromPaise, round2, toPaise } from './money';
 import { displayName, findDuplicateName } from './names';
+
+let db: LedgerDb = indexedDb as unknown as LedgerDb;
+
+const ledgerListeners = new Set<() => void>();
+
+export function subscribeRepository(listener: () => void): () => void {
+  ledgerListeners.add(listener);
+  return () => {
+    ledgerListeners.delete(listener);
+  };
+}
+
+function notifyRepository() {
+  ledgerListeners.forEach((listener) => listener());
+}
 
 /**
  * The only data access the UI should use.
@@ -46,7 +62,8 @@ export type ImportCounts = {
 };
 
 export type ExpenseRepository = {
-  open(): Promise<void>;
+  /** Resolves true when the ledger will still be there after a reload. */
+  open(): Promise<boolean>;
   listCrops(): Promise<Crop[]>;
   addCrop(name: string): Promise<Crop>;
   renameCrop(id: string, name: string): Promise<Crop>;
@@ -84,37 +101,37 @@ export type ExpenseRepository = {
 const dexieRepository: ExpenseRepository = {
   open: () => openDatabase(),
   listCrops: () => run(listCrops),
-  addCrop: (name) => run(() => addCrop(name)),
-  renameCrop: (id, name) => run(() => renameCrop(id, name)),
-  setCropArchived: (id, archived) => run(() => setCropArchived(id, archived)),
-  setCropAcres: (id, acres) => run(() => setCropAcres(id, acres)),
-  deleteCrop: (id) => run(() => deleteCrop(id)),
-  mergeCrops: (fromId, intoId) => run(() => mergeCrops(fromId, intoId)),
+  addCrop: (name) => write(() => addCrop(name)),
+  renameCrop: (id, name) => write(() => renameCrop(id, name)),
+  setCropArchived: (id, archived) => write(() => setCropArchived(id, archived)),
+  setCropAcres: (id, acres) => write(() => setCropAcres(id, acres)),
+  deleteCrop: (id) => write(() => deleteCrop(id)),
+  mergeCrops: (fromId, intoId) => write(() => mergeCrops(fromId, intoId)),
 
   listCategories: () => run(listCategories),
-  addCategory: (name, icon) => run(() => addCategory(name, icon)),
-  renameCategory: (id, name) => run(() => renameCategory(id, name)),
-  setCategoryIcon: (id, icon) => run(() => setCategoryIcon(id, icon)),
-  setCategoryArchived: (id, archived) => run(() => setCategoryArchived(id, archived)),
-  deleteCategory: (id) => run(() => deleteCategory(id)),
-  mergeCategories: (fromId, intoId) => run(() => mergeCategories(fromId, intoId)),
+  addCategory: (name, icon) => write(() => addCategory(name, icon)),
+  renameCategory: (id, name) => write(() => renameCategory(id, name)),
+  setCategoryIcon: (id, icon) => write(() => setCategoryIcon(id, icon)),
+  setCategoryArchived: (id, archived) => write(() => setCategoryArchived(id, archived)),
+  deleteCategory: (id) => write(() => deleteCategory(id)),
+  mergeCategories: (fromId, intoId) => write(() => mergeCategories(fromId, intoId)),
 
   listExpenses: (filter) => run(() => listExpenses(filter)),
-  addExpense: (input) => run(() => addExpense(input)),
-  updateExpense: (id, input) => run(() => updateExpense(id, input)),
-  deleteExpense: (id) => run(() => deleteExpense(id)),
+  addExpense: (input) => write(() => addExpense(input)),
+  updateExpense: (id, input) => write(() => updateExpense(id, input)),
+  deleteExpense: (id) => write(() => deleteExpense(id)),
 
   listIncomes: (range) => run(() => listIncomes(range)),
-  addIncome: (input) => run(() => addIncome(input)),
-  updateIncome: (id, input) => run(() => updateIncome(id, input)),
-  deleteIncome: (id) => run(() => deleteIncome(id)),
+  addIncome: (input) => write(() => addIncome(input)),
+  updateIncome: (id, input) => write(() => updateIncome(id, input)),
+  deleteIncome: (id) => write(() => deleteIncome(id)),
 
   summarize: (range) => run(() => summarize(range)),
   usage: () => run(usage),
 
   exportBackup: () => run(exportBackup),
   exportExpensesCsv: (filter) => run(() => exportExpensesCsv(filter)),
-  importBackup: (data) => run(() => importBackup(data)),
+  importBackup: (data) => write(() => importBackup(data)),
 };
 
 export const repository: ExpenseRepository = dexieRepository;
@@ -611,24 +628,63 @@ function createId(): string {
   });
 }
 
-async function openDatabase(): Promise<void> {
+const LOCAL_BACKEND_KEY = 'farm-ledger-backend';
+
+async function openDatabase(): Promise<boolean> {
+  const store = browserStore();
+  if (store?.getItem(LOCAL_BACKEND_KEY) === 'local') {
+    const local = createLocalLedger(store);
+    db = local.db;
+    return local.persistent;
+  }
+
   let last: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      await db.open();
-      return;
+      await indexedDb.open();
+      db = indexedDb as unknown as LedgerDb;
+      return true;
     } catch (error) {
       last = error;
       if (!isTransientDexieError(error) || attempt === 2) break;
       try {
-        db.close();
+        indexedDb.close();
       } catch {
         // The connection may already be closed after an aborted open.
       }
       await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)));
     }
   }
-  throw asRepositoryError(last);
+  if (!isStorageUnavailable(last)) throw asRepositoryError(last);
+  console.error(last);
+  const local = createLocalLedger(store);
+  db = local.db;
+  try {
+    store?.setItem(LOCAL_BACKEND_KEY, 'local');
+  } catch {
+    // The ledger can still be used for this visit.
+  }
+  return local.persistent;
+}
+
+function browserStore() {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const key = 'farm-ledger-storage-test';
+    localStorage.setItem(key, '1');
+    localStorage.removeItem(key);
+    return localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function write<T>(fn: () => Promise<T>): Promise<T> {
+  return run(async () => {
+    const result = await fn();
+    notifyRepository();
+    return result;
+  });
 }
 
 async function run<T>(fn: () => Promise<T>): Promise<T> {
@@ -663,6 +719,17 @@ function asRepositoryError(error: unknown): RepositoryError {
 function isTransientDexieError(error: unknown): boolean {
   const name = errorName(error);
   return name === 'AbortError' || name === 'DatabaseClosedError';
+}
+
+function isStorageUnavailable(error: unknown): boolean {
+  const name = errorName(innermost(error));
+  return (
+    name === 'SecurityError' ||
+    name === 'UnknownError' ||
+    name === 'InvalidStateError' ||
+    name === 'MissingAPIError' ||
+    isTransientDexieError(error)
+  );
 }
 
 function innermost(error: unknown): unknown {

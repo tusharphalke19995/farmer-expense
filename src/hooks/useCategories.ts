@@ -1,6 +1,6 @@
-import { useLiveQuery } from 'dexie-react-hooks';
 import { repository } from '../data/repository';
+import { useRepositoryQuery } from './useRepositoryQuery';
 
 export function useCategories() {
-  return useLiveQuery(() => repository.listCategories(), []);
+  return useRepositoryQuery(() => repository.listCategories(), []);
 }
