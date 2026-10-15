@@ -46,6 +46,7 @@ export type ImportCounts = {
 };
 
 export type ExpenseRepository = {
+  open(): Promise<void>;
   listCrops(): Promise<Crop[]>;
   addCrop(name: string): Promise<Crop>;
   renameCrop(id: string, name: string): Promise<Crop>;
@@ -81,6 +82,7 @@ export type ExpenseRepository = {
 };
 
 const dexieRepository: ExpenseRepository = {
+  open: () => openDatabase(),
   listCrops: () => run(listCrops),
   addCrop: (name) => run(() => addCrop(name)),
   renameCrop: (id, name) => run(() => renameCrop(id, name)),
@@ -609,28 +611,68 @@ function createId(): string {
   });
 }
 
+async function openDatabase(): Promise<void> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await db.open();
+      return;
+    } catch (error) {
+      last = error;
+      if (!isTransientDexieError(error) || attempt === 2) break;
+      try {
+        db.close();
+      } catch {
+        // The connection may already be closed after an aborted open.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)));
+    }
+  }
+  throw asRepositoryError(last);
+}
+
 async function run<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
+    // Dexie live queries abort and retry these. Wrapping them makes the retry look fatal.
+    if (isTransientDexieError(error)) throw error;
     throw asRepositoryError(error);
   }
 }
 
 function asRepositoryError(error: unknown): RepositoryError {
   if (error instanceof RepositoryError) return error;
-  if (isRecord(error) && error.inner instanceof RepositoryError) return error.inner;
-  if (
-    error instanceof DOMException &&
-    (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED')
-  ) {
+  const inner = innermost(error);
+  if (inner instanceof RepositoryError) return inner;
+  const name = errorName(inner);
+  if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') {
     return new RepositoryError('This phone is out of storage space for the ledger.', 'STORAGE');
   }
+  if (name === 'SecurityError' || name === 'UnknownError' || name === 'InvalidStateError' || name === 'MissingAPIError') {
+    return new RepositoryError(
+      'Could not read or write the ledger on this phone. Check that storage is allowed for this site.',
+      'STORAGE',
+    );
+  }
   console.error(error);
-  return new RepositoryError(
-    'Could not read or write the ledger on this phone. Check that storage is allowed for this site.',
-    'STORAGE',
-  );
+  const detail = inner instanceof Error && inner.message ? inner.message : 'The ledger could not be opened.';
+  return new RepositoryError(detail, 'STORAGE');
+}
+
+function isTransientDexieError(error: unknown): boolean {
+  const name = errorName(error);
+  return name === 'AbortError' || name === 'DatabaseClosedError';
+}
+
+function innermost(error: unknown): unknown {
+  if (isRecord(error) && error.inner != null && error.inner !== error) return innermost(error.inner);
+  return error;
+}
+
+function errorName(error: unknown): string {
+  if (isRecord(error) && typeof error.name === 'string') return error.name;
+  return '';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> & { inner?: unknown } {

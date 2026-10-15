@@ -4,6 +4,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ExpenseForm } from './components/ExpenseForm';
 import { ExpenseList } from './components/ExpenseList';
 import { ManageLists } from './components/ManageLists';
+import { useLedger } from './hooks/useLedger';
 import { useTheme } from './hooks/useTheme';
 import type { Expense } from './types';
 
@@ -11,6 +12,7 @@ type Tab = 'dashboard' | 'expenses' | 'add' | 'manage';
 
 export default function App() {
   const { theme, toggle } = useTheme();
+  const ledger = useLedger();
   const [tab, setTab] = useState<Tab>('dashboard');
   const [editing, setEditing] = useState<Expense | null>(null);
 
@@ -46,8 +48,20 @@ export default function App() {
           </button>
         </header>
         <main className="page-pad px-4 pt-4">
-          {tab === 'dashboard' ? <Dashboard onManage={() => openTab('manage')} /> : null}
-          {tab === 'expenses' ? (
+          {ledger.status === 'opening' ? <p className="text-[var(--muted)]">Opening your ledger…</p> : null}
+          {ledger.status === 'error' ? (
+            <div>
+              <p>The ledger on this phone could not be read.</p>
+              <p className="error" role="alert">
+                {ledger.message}
+              </p>
+              <button type="button" className="btn btn-primary mt-4" onClick={() => window.location.reload()}>
+                Reload
+              </button>
+            </div>
+          ) : null}
+          {ledger.status === 'ready' && tab === 'dashboard' ? <Dashboard onManage={() => openTab('manage')} /> : null}
+          {ledger.status === 'ready' && tab === 'expenses' ? (
             <ExpenseList
               onEdit={(expense) => {
                 setEditing(expense);
@@ -55,7 +69,7 @@ export default function App() {
               }}
             />
           ) : null}
-          {tab === 'add' ? (
+          {ledger.status === 'ready' && tab === 'add' ? (
             <ExpenseForm
               key={editing?.id ?? 'new'}
               expense={editing}
@@ -73,7 +87,7 @@ export default function App() {
               }
             />
           ) : null}
-          {tab === 'manage' ? <ManageLists /> : null}
+          {ledger.status === 'ready' && tab === 'manage' ? <ManageLists /> : null}
         </main>
         <nav
           className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--line)] bg-[var(--bg-elevated)]"

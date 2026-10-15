@@ -17,13 +17,22 @@ import type { Category, Crop, Expense, Income, MetaRow } from '../types';
 export type ExpenseRecord = Omit<Expense, 'amount'> & { amount: number };
 export type IncomeRecord = Omit<Income, 'amount'> & { amount: number };
 
-export class FarmLedgerDB extends Dexie {
-  crops!: Table<Crop, string>;
-  categories!: Table<Category, string>;
-  expenses!: Table<ExpenseRecord, string>;
-  incomes!: Table<IncomeRecord, string>;
-  meta!: Table<MetaRow, string>;
+/**
+ * Tables are declared on the interface, not as class fields.
+ * On some phones, ES2022 class fields are reset to undefined after Dexie
+ * assigns them, and every read then fails.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
+export interface FarmLedgerDB {
+  crops: Table<Crop, string>;
+  categories: Table<Category, string>;
+  expenses: Table<ExpenseRecord, string>;
+  incomes: Table<IncomeRecord, string>;
+  meta: Table<MetaRow, string>;
+}
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
+export class FarmLedgerDB extends Dexie {
   constructor() {
     super('FarmLedger');
 
